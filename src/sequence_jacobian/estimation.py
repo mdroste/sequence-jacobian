@@ -157,8 +157,8 @@ try:
         
         def construct_jacobian_model(self, inputs):
             inp_names = set([inp.name for inp in inputs])
-            self.model = self.reduce_model(inp_names, T=self.T)
-            self.precomputed = False
+            self.jac_model = self.reduce_model(inp_names, T=self.T)
+            self.precomputed = True
             return None            
 
         def reduce_model(self, param_names, T):
@@ -199,7 +199,8 @@ try:
         
         def perform(self, node: Apply, inputs: list[np.ndarray], outputs: list[list[None]]) -> None:
             # convert model to jacobian blocks
-            self.construct_jacobian_model(node.inputs)
+            if self.precomputed:
+                self.construct_jacobian_model(node.inputs)
 
             # TODO: there should be a better way to consolidate parameters
             is_not_shock = {
@@ -225,7 +226,7 @@ try:
             # reparameterize the model and recompute the Jacobian
             ss_new = self.steady_state.copy()
             ss_new.update(model_params)
-            new_jacobian = self.model.solve_jacobian(
+            new_jacobian = self.jac_model.solve_jacobian(
                 ss_new, unknowns, targets, inputs, outputs, T=self.T
             )
 
