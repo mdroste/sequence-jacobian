@@ -155,17 +155,22 @@ try:
                 "outputs": outputs
             }
         
-        def construct_jacobian_model(self, inputs: list[np.ndarray]):
-            inp_names = set(inp.name for inp in inputs)
-            self.model = self.reduce_model(inp_names, **self.model_info, T=self.T)
+        def construct_jacobian_model(self, inputs):
+            inp_names = set([inp.name for inp in inputs])
+            self.model = self.reduce_model(inp_names, T=self.T)
             self.precomputed = False
             return None            
 
-        def reduce_model(self, param_names, unknowns, targets, inputs, outputs, T):
+        def reduce_model(self, param_names, T):
             model = self.model
-            inputs, unknowns = model.make_ordered_set(inputs), model.make_ordered_set(unknowns)
+
+            inputs   = model.make_ordered_set(self.model_info["inputs"])
+            unknowns = model.make_ordered_set(self.model_info["unknowns"])
+            targets  = model.make_ordered_set(self.model_info["targets"])
+            outputs  = model.make_ordered_set(self.model_info["outputs"])
+
             actual_outputs, unknowns_as_outputs = model.process_outputs(
-                ss, unknowns, model.make_ordered_set(outputs)
+                self.steady_state, unknowns, outputs
             )
 
             ss = model.M.inv @ self.steady_state
@@ -194,8 +199,7 @@ try:
         
         def perform(self, node: Apply, inputs: list[np.ndarray], outputs: list[list[None]]) -> None:
             # convert model to jacobian blocks
-            if not self.precompiled:
-                self.construct_jacobian_model(inputs)
+            self.construct_jacobian_model(node.inputs)
 
             # TODO: there should be a better way to consolidate parameters
             is_not_shock = {
@@ -209,21 +213,22 @@ try:
 
             shocks = self.assemble_shocks(*shock_params)
             logposterior = self.likelihood(
-                *model_params, shocks
+                model_params, shocks
             )
 
             outputs[0][0] = np.asarray(logposterior)
 
         def likelihood(self, model_params, shocks):
+            outputs, inputs = self.model_info["outputs"], self.model_info["inputs"]
+            unknowns, targets = self.model_info["unknowns"], self.model_info["targets"]
+            
             # reparameterize the model and recompute the Jacobian
             ss_new = self.steady_state.copy()
             ss_new.update(model_params)
             new_jacobian = self.model.solve_jacobian(
-                ss_new, **self.model_info, T=self.T
+                ss_new, unknowns, targets, inputs, outputs, T=self.T
             )
 
-            # compute the log posterior likelihood
-            outputs, inputs = self.model_info["outputs"], self.model_info["inputs"]
             return log_likelihood(
                 self.data, shocks, new_jacobian, outputs, inputs, T=self.T
             )
