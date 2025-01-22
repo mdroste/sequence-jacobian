@@ -5,6 +5,8 @@ import scipy.linalg as linalg
 from numba import njit
 import warnings
 
+from .blocks.combined_block import create_model
+
 '''Part 1: compute covariances at all lags and log likelihood'''
 
 
@@ -120,12 +122,14 @@ try:
         can be customized to recompute a Jacobian only when necessary.
         """
         def __init__(
-                self, data, steady_state, model, likelihood_func, unknowns, targets, exogenous, **kwargs
+                self, data, steady_state, model, shock_func, unknowns, targets, exogenous, T, **kwargs
             ):
             # save important model info
             self.steady_state = steady_state
             self.model = model
-            self.logpdf = likelihood_func
+            # self.logpdf = likelihood_func
+            self.assemble_shocks = shock_func
+            self.T = T
 
             # check that all series are of equal length
             T_data = [len(v) for v in data.values()]
@@ -139,8 +143,48 @@ try:
             # record the initial Jacobian
             outputs = list(data.keys())
             self.jacobian = model.solve_jacobian(
-                steady_state, unknowns, targets, exogenous, outputs, **kwargs
+                steady_state, unknowns, targets, exogenous, outputs, T=T, **kwargs
             )
+
+            # this is certainly sloppy, but it works for the meantime
+            self.precomputed = False
+            self.model_info = {
+                "unknowns": unknowns,
+                "targets": targets,
+                "inputs": exogenous,
+                "outputs": outputs
+            }
+        
+        def construct_jacobian_model(self, inputs: list[np.ndarray]):
+            inp_names = set(inp.name for inp in inputs)
+            self.model = self.reduce_model(inp_names, **self.model_info, T=self.T)
+            self.precomputed = False
+            return None            
+
+        def reduce_model(self, param_names, unknowns, targets, inputs, outputs, T):
+            model = self.model
+            inputs, unknowns = model.make_ordered_set(inputs), model.make_ordered_set(unknowns)
+            actual_outputs, unknowns_as_outputs = model.process_outputs(
+                ss, unknowns, model.make_ordered_set(outputs)
+            )
+
+            ss = model.M.inv @ self.steady_state
+            reqs = model._required
+            vector_valued = ss._vector_valued()
+            
+            inputs  = (model.M.inv @ (inputs | unknowns) | reqs) - vector_valued
+            outputs = (model.M.inv @ ((actual_outputs | targets) - unknowns) | reqs) - vector_valued
+            
+            new_blocks = []
+            for block in model.blocks:
+                if model.make_ordered_set(block.inputs) & set(param_names):
+                    new_blocks.append(block)
+                else:
+                    new_blocks.append(
+                        block.jacobian(ss, inputs & block.inputs, outputs & block.outputs, T=T)
+                    )
+
+            return create_model(new_blocks, name="reduced Jacobian")
 
         def make_node(self, *args) -> Apply:
             inputs = [pt.as_tensor(arg) for arg in args]
@@ -149,6 +193,10 @@ try:
             return Apply(self, inputs, outputs)
         
         def perform(self, node: Apply, inputs: list[np.ndarray], outputs: list[list[None]]) -> None:
+            # convert model to jacobian blocks
+            if not self.precompiled:
+                self.construct_jacobian_model(inputs)
+
             # TODO: there should be a better way to consolidate parameters
             is_not_shock = {
                 inp.name: (inp.name in self.model.inputs) for inp in node.inputs
@@ -159,16 +207,26 @@ try:
                 k: inputs[i] for i,(k,v) in enumerate(is_not_shock.items()) if v
             }
 
-            if not model_params:
-                logposterior = self.logpdf(
-                    *shock_params, self.data, self.steady_state, self.model, self.jacobian
-                )
-            else:
-                logposterior = self.logpdf(
-                    model_params, *shock_params, self.data, self.steady_state, self.model, self.jacobian
-                )
+            shocks = self.assemble_shocks(*shock_params)
+            logposterior = self.likelihood(
+                *model_params, shocks
+            )
 
             outputs[0][0] = np.asarray(logposterior)
+
+        def likelihood(self, model_params, shocks):
+            # reparameterize the model and recompute the Jacobian
+            ss_new = self.steady_state.copy()
+            ss_new.update(model_params)
+            new_jacobian = self.model.solve_jacobian(
+                ss_new, **self.model_info, T=self.T
+            )
+
+            # compute the log posterior likelihood
+            outputs, inputs = self.model_info["outputs"], self.model_info["inputs"]
+            return log_likelihood(
+                self.data, shocks, new_jacobian, outputs, inputs, T=self.T
+            )
 
 except ImportError:
     class DensityModel:
