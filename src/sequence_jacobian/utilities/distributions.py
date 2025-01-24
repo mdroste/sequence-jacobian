@@ -98,7 +98,7 @@ class InvGamma(Distribution):
         )
 
     def rand(self, size=None):
-        return random.invgamma(
+        return stats.invgamma.rvs(
             self.alpha,
             scale = self.theta,
             size = size
@@ -197,6 +197,11 @@ class Prior(Distribution):
             )
         else:
             raise TypeError("must be recast as a dictionary")
+        
+        self.support = {}
+        for param, dist in self.dists.items():
+            cond_dist = dist(self.support) if callable(dist) else dist
+            self.support[param] = cond_dist.support
     
     def _rand(self):
         out = {}
