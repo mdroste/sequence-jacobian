@@ -72,6 +72,20 @@ class MA(ARMA):
         self.parameters = {"theta": theta, "sigma": sigma}
 
 
+class News(Shock):
+    """
+    A News shock defined by a starting period, a duration, and a scale
+    """
+    def __init__(self, duration=1, scale=1.0, start=0):
+        self.start = start
+        self.end   = start + duration
+        self.scale = scale
+
+    def simulate_impulse(self, T: int):
+        num_range = np.arange(T)
+        return self.scale*((num_range >= self.start) & (num_range < self.end))
+
+
 # @njit
 def _simulate_impulse(phi, theta, sigma, T: int):
     """
@@ -106,7 +120,7 @@ def _alloc_ndarray(poly):
         return poly
 
 
-# TODO: generate impulses for parameters with alternative shocks
+# TODO: fix matmul for stacked shocks... it is mega broken
 class ShockDict(ResultDict):
     def __init__(self, data):
         if isinstance(data, ShockDict):
@@ -116,43 +130,67 @@ class ShockDict(ResultDict):
                 raise ValueError('ShockDicts are initialized with a `dict` of top-level shocks.')
             super().__init__(data)
 
-        # this is not a great solution either...
-        self.parameters = {k: v.parameters for k,v in self.toplevel.items()}
-
     def generate_impulses(self, T: int):
         impulses = {}
         for k, v in self.items():
             if isinstance(v, Shock):
                 impulses[k] = v.simulate_impulse(T)
             else:
-                raise NotImplementedError('Multi-scenario shocks not yet supported.')
+                impulses[k] = [vi.simulate_impulse(T) for vi in v]
         
         return impulses
-    
-    def reparameterize(self, parameters: dict[str: dict]):
-        # TODO: this does not change the parameters attr at the "top level"
-        for k, v in self.toplevel.items():
-            v.reparameterize(parameters[k])
-            v.parameters = parameters[k]
 
 ## DATA GENERATING PROCESS TOOLS ##############################################
 
-def simulate(impulses, outputs, T_sim):
-    """
-    impulses: list of ImpulseDicts, each an impulse to independent unit normal shock
-    outputs: list of outputs we want in simulation
-    T_sim: length of simulation
+# def simulate(impulses, outputs, T_sim):
+#     """
+#     impulses: list of ImpulseDicts, each an impulse to independent unit normal shock
+#     outputs: list of outputs we want in simulation
+#     T_sim: length of simulation
 
-    simulation: dict mapping each output to length-T_sim simulated series
-    """
+#     simulation: dict mapping each output to length-T_sim simulated series
+#     """
 
+#     simulation = {}
+#     epsilons = [np.random.randn(T_sim+impulses[0].T-1) for _ in impulses]
+#     for o in outputs:
+#         simulation[o] = sum(
+#             simul_shock(imp[o], eps) for imp, eps in zip(impulses, epsilons)
+#         )
+        
+#     return simulation
+
+def get_responses(impulses, jacobian):
+    stacked_irfs = []
+    for var, imp in impulses.items():
+        if isinstance(imp, np.ndarray):
+            # for singular shocks
+            response = jacobian @ {var: imp}
+            stacked_irfs.append(response)
+        else:
+            # for stacked shocks
+            for i in imp:
+                response = jacobian @ {var: i}
+                stacked_irfs.append(response)
+    
+    return stacked_irfs
+
+def stacked_responses(impulses, jacobian, outputs):
+    stacked_irfs = get_responses(impulses, jacobian)
+
+    # there is likely a more cleaner way to do this, but for now this works
+    return np.stack(
+        [np.stack(list(map(irf.get, outputs)), axis=1) for irf in stacked_irfs],
+        axis = 2
+    )
+
+def simulate(irfs, outputs, T_sim):
     simulation = {}
-    epsilons = [np.random.randn(T_sim+impulses[0].T-1) for _ in impulses]
+    epsilons = [np.random.randn(T_sim+irfs[0].T-1) for _ in irfs]
     for o in outputs:
         simulation[o] = sum(
-            simul_shock(imp[o], eps) for imp, eps in zip(impulses, epsilons)
+            simul_shock(imp[o], eps) for imp, eps in zip(irfs, epsilons)
         )
-        
     return simulation
 
 
