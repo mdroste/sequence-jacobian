@@ -112,31 +112,30 @@ class MetropolisHastings(Sampler):
 class Slice(Sampler):
     def __init__(self, density_model, priors, w, max_iters=20):
         super().__init__(density_model, priors)
-        self.w = np.asarray(w).copy()
+
+        # set the step size for all parameters
+        self.w = {k: w for k in priors.dists.keys()}
         self.max_iters = max_iters
 
     def iterate(self, theta, **kwargs):
-        theta0 = np.copy(theta)
-        if theta0.shape != self.w.shape:
-            self.w = np.resize(self.w, len(theta0))
-
+        theta0 = theta.copy()
         nstep_out = nstep_in = 0
 
         # define boundaries
-        thetal = np.copy(theta0)
-        thetar = np.copy(theta0)
+        thetal = theta0.copy()
+        thetar = theta0.copy()
 
-        for i, wi in enumerate(self.w):
-            # uniformly sample from 0 to p(q), but in log space
-            y = self.log_posterior(theta, **kwargs) - np.random.standard_exponential()
+        for i, wi in self.w.items():
+            # uniformly sample from 0 to p(theta) in log space
+            logprob = self.log_posterior(theta, **kwargs) - np.random.standard_exponential()
 
-            # Create initial interval
+            # create initial interval
             thetal[i] = theta[i] - np.random.uniform() * wi
             thetar[i] = thetal[i] + wi
 
-            # Stepping out procedure
+            # stepping out procedure
             iter = 0
-            while y <= self.log_posterior(thetal, **kwargs):
+            while logprob <= self.log_posterior(thetal, **kwargs):
                 thetal[i] -= wi
                 iter += 1
                 # if iter > self.max_iters:
@@ -144,7 +143,7 @@ class Slice(Sampler):
             nstep_out += iter
 
             iter = 0
-            while y <= self.log_posterior(thetar, **kwargs):
+            while logprob <= self.log_posterior(thetar, **kwargs):
                 thetar[i] += wi
                 iter += 1
                 # if iter > self.max_iters:
@@ -152,9 +151,9 @@ class Slice(Sampler):
             nstep_out += iter
 
             iter = 0
-            theta[i] = self.rng.uniform(thetal[i], thetar[i])
+            theta[i] = np.random.uniform(thetal[i], thetar[i])
 
-            while y > self.log_posterior(theta, **kwargs):
+            while logprob > self.log_posterior(theta, **kwargs):
                 if theta[i] > theta0[i]:
                     thetar[i] = theta[i]
                 elif theta[i] < theta0[i]:
@@ -165,10 +164,10 @@ class Slice(Sampler):
                 #     raise RuntimeError("exceeded max iters")
             nstep_in += iter
 
-            # Set qr and ql to the accepted points (they matter for subsequent iterations)
+            # reset bounds to the accepted points
             thetar[i] = thetal[i] = theta[i]
 
-        return theta
+        return theta, logprob, 1
 
 class MaximumLikelihood:
     def __init__(self, density_model, priors):
