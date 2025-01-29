@@ -214,3 +214,78 @@ class DensityModel:
             self.data, shocks, jacobian, outputs, inputs,
             T=self.T, sigma_measurement=self.meas_cov
         )
+
+    # TODO: this is messy and needs to be cleaned up quite a bit
+    def back_out_shocks(self, params, preperiods=0, **kwargs):
+        shocks = self.assemble_shocks(params)
+        outputs, inputs = self.model_info["outputs"], self.model_info["inputs"]
+        unknowns, targets = self.model_info["unknowns"], self.model_info["targets"]
+
+        impulses = shocks.generate_impulses(self.T)
+        ss_new = self.steady_state.copy()
+        ss_new.update(
+            dict((k, params[k]) for k in self.model.inputs if k in params)
+        )
+
+        y = self.data
+        jacobian = self.jac_model.solve_jacobian(
+            ss_new, unknowns, targets, inputs, outputs, T=self.T, **kwargs
+        )
+
+        M = stacked_responses(impulses, jacobian, outputs)
+        Ty, Oy = y.shape
+        Tm, O, E = M.shape
+        Ty_with_pre = Ty + preperiods
+
+        A_full = construct_stacked_A(M, To=Ty_with_pre, To_out=Ty, sigma=self.meas_cov)
+        y = y.reshape(Ty*O)
+
+        # Step 2: Solve OLS
+        eps_hat = np.linalg.lstsq(A_full, y, rcond=None)[0]  # this is To*E x 1 dimensional array
+        eps_hat = eps_hat.reshape((Ty_with_pre, E))
+
+        # Step 3: Decompose data
+        for _ in range(E):
+            A_full = A_full.reshape((Ty, O, Ty_with_pre, E))
+            Ds = np.sum(A_full*eps_hat, axis=2)
+
+        # Cut away pre periods from eps_hat
+        eps_hat = eps_hat[preperiods:,:]
+
+        return eps_hat, Ds
+
+# TODO: stream line this as well, the amount of reshaping is a little crazy
+def construct_stacked_A(As, To, To_out=None, sigma=None, reshape=True):
+    Tm, O, E = As.shape
+
+    if To_out is None:
+        To_out = To
+
+    A_full = np.zeros((To_out, O, To, E))
+    for o in range(O):
+        for itshock in range(To):
+            # if To > To_out, allow the first To - To_out shocks to happen before the To_out time periods
+            if To <= To_out:
+                iA_full = itshock
+                iAs = 0
+
+                shock_length = min(Tm, To_out - iA_full)
+            else:
+                # this would be the correct start time of the shock
+                iA_full = itshock - (To - To_out)
+
+                # since it can be negative, only start IRFs at later date
+                iAs = - min(iA_full, 0)
+
+                # correct iA_full by that date
+                iA_full += - min(iA_full, 0)
+
+                shock_length = min(Tm, To_out - iA_full)
+
+            for e in range(E):
+                # I removed the scaling by std dev since the new object technically takes care of that
+                A_full[iA_full:iA_full + shock_length, o, itshock, e] = As[iAs:iAs + shock_length, o, e]
+
+    if reshape:
+        A_full = A_full.reshape((To_out * O, To * E))
+    return A_full
