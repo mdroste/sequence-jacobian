@@ -13,7 +13,7 @@ from .classes.jacobian_dict import JacobianDict
 from .utilities.drawdag import drawdag
 
 from .utilities.distributions import *
-from .utilities.shocks import AR, ARMA, MA, News, ShockDict
+from .utilities.shocks import AR, ARMA, MA, News, ShockDict, StackedShock
 # from .estimation import DensityModel
 # from .samplers import MetropolisHastings, MaximumLikelihood
 

@@ -86,6 +86,18 @@ class News(Shock):
         return self.scale*((num_range >= self.start) & (num_range < self.end))
 
 
+# NOTE: work in progress
+class StackedShock(Shock):
+    def __init__(self, *shocks):
+        self.shocks = shocks
+        self.num_shocks = len(shocks)
+
+    def simulate_impulse(self, T: int):
+        return sum(
+            shock.simulate_impulse(T) for shock in self.shocks
+        )
+
+
 # @njit
 def _simulate_impulse(phi, theta, sigma, T: int):
     """
@@ -184,12 +196,12 @@ def stacked_responses(impulses, jacobian, outputs):
         axis = 2
     )
 
-def simulate(irfs, outputs, T_sim):
+def simulate(irfs, series, T_sim):
     simulation = {}
     epsilons = [np.random.randn(T_sim+irfs[0].T-1) for _ in irfs]
-    for o in outputs:
-        simulation[o] = sum(
-            simul_shock(imp[o], eps) for imp, eps in zip(irfs, epsilons)
+    for s in series:
+        simulation[s] = sum(
+            simul_shock(imp[s], eps) for imp, eps in zip(irfs, epsilons) if s in imp.keys()
         )
     return simulation
 
