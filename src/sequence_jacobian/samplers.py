@@ -175,7 +175,7 @@ class MaximumLikelihood:
         self.model = density_model
 
     # just perform constrained optimization for now
-    def optimize(self, algo, bounded=False):
+    def optimize(self, algo, bounded=False, **kwargs):
         bounds = om.Bounds(
             lower = {k: v[0] for k,v in self.priors.support.items()},
             upper = {k: v[1] for k,v in self.priors.support.items()}
@@ -184,5 +184,6 @@ class MaximumLikelihood:
             lambda theta: self.model.log_likelihood(theta),
             self.priors.rand(),
             bounds = bounds if bounded else None,
-            algorithm = algo
+            algorithm = algo,
+            **kwargs
         )
