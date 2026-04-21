@@ -14,12 +14,21 @@ class IdentityMatrix:
     def matrix(self, T):
         return np.eye(T)
 
+    @staticmethod
+    def _passthrough_copy(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.copy()
+        elif isinstance(obj, SimpleSparse):
+            return obj
+        else:
+            return copy.copy(obj)
+
     def __matmul__(self, other):
         """Identity matrix knows to simply return 'other' whenever it's multiplied by 'other'."""
-        return copy.deepcopy(other)
+        return self._passthrough_copy(other)
 
     def __rmatmul__(self, other):
-        return copy.deepcopy(other)
+        return self._passthrough_copy(other)
 
     def __mul__(self, a):
         return a*self.sparse()

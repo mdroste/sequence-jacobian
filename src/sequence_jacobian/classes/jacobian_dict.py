@@ -162,7 +162,8 @@ class JacobianDict(NestedDict):
             raise ValueError(f'Trying to multiply JacobianDicts with inconsistent dimensions {self.T} and {J.T}')
 
         o_list = self.outputs
-        m_list = tuple(set(self.inputs) & set(J.outputs))
+        J_out_set = set(J.outputs)
+        m_list = [m for m in self.inputs if m in J_out_set]
         i_list = J.inputs
 
         J_om = self.nesteddict
@@ -170,24 +171,31 @@ class JacobianDict(NestedDict):
         J_oi = {}
 
         for o in o_list:
-            J_oi[o] = {}
+            row_om = J_om[o]
+            relevant_m = [m for m in m_list if m in row_om]
+            if not relevant_m:
+                J_oi[o] = {}
+                continue
+            out_row = {}
             for i in i_list:
                 Jout = None
-                for m in m_list:
-                    if m in J_om[o] and i in J_mi[m]:
+                for m in relevant_m:
+                    J_mi_m = J_mi[m]
+                    if i in J_mi_m:
+                        term = row_om[m] @ J_mi_m[i]
                         if Jout is None:
-                            Jout = J_om[o][m] @ J_mi[m][i]
+                            Jout = term
                         else:
-                            Jout += J_om[o][m] @ J_mi[m][i]
+                            Jout += term
                 if Jout is not None:
-                    J_oi[o][i] = Jout
+                    out_row[i] = Jout
+            J_oi[o] = out_row
 
         return JacobianDict(J_oi, o_list, i_list)
 
     def apply(self, x: Union[ImpulseDict, Dict[str, Array]]):
         """Returns J @ x"""
         x = ImpulseDict(x)
-
         inputs = x.keys() & set(self.inputs)
         J_oi = self.nesteddict
         y = {}

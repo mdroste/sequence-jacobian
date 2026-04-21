@@ -60,23 +60,24 @@ class ExtendedFunction:
         else:
             self.f = f
             self.name, self.inputs, self.outputs = metadata(f)
+        self._inputs_tuple = tuple(self.inputs)
+
+    def _extract_inputs(self, input_dict, preprocess=None):
+        if preprocess is None:
+            return {k: input_dict[k] for k in self._inputs_tuple if k in input_dict}
+        else:
+            return {k: preprocess(input_dict[k]) for k in self._inputs_tuple if k in input_dict}
 
     def __call__(self, input_dict):
         # take subdict of d contained in inputs
         # this allows for d not to include all inputs (if there are optional inputs)
-        input_dict = {k: v for k, v in input_dict.items() if k in self.inputs}
-        return self.outputs.dict_from(make_tuple(self.f(**input_dict)))
+        return self.outputs.dict_from(make_tuple(self.f(**self._extract_inputs(input_dict))))
 
     def __repr__(self):
         return f'<{type(self).__name__}({self.name}): {self.inputs} -> {self.outputs}>'
 
     def wrapped_call(self, input_dict, preprocess=None, postprocess=None):
-        if preprocess is not None:
-            input_dict = {k: preprocess(v) for k, v in input_dict.items() if k in self.inputs}
-        else:
-            input_dict = {k: v for k, v in input_dict.items() if k in self.inputs}
-
-        output_dict = self.outputs.dict_from(make_tuple(self.f(**input_dict)))
+        output_dict = self.outputs.dict_from(make_tuple(self.f(**self._extract_inputs(input_dict, preprocess))))
         if postprocess is not None:
             output_dict = {k: postprocess(v) for k, v in output_dict.items()}
         
@@ -89,7 +90,9 @@ class ExtendedFunction:
 class DifferentiableExtendedFunction(ExtendedFunction):
     def __init__(self, f, name, inputs, outputs, input_dict, h=1E-4, twosided=False):
         self.f, self.name, self.inputs, self.outputs = f, name, inputs, outputs
+        self._inputs_tuple = tuple(self.inputs)
         self.input_dict = input_dict
+        self.base_input_dict = self._extract_inputs(input_dict)
         self.output_dict = None # lazy evaluation of outputs for one-sided diff
         self.h = h
         self.default_twosided = twosided
@@ -108,12 +111,14 @@ class DifferentiableExtendedFunction(ExtendedFunction):
             h = self.h
 
         if self.output_dict is None:
-            self.output_dict = self(self.input_dict)
+            self.output_dict = self.outputs.dict_from(make_tuple(self.f(**self.base_input_dict)))
 
-        shocked_input_dict = {**self.input_dict,
-            **{k: self.input_dict[k] + h * shock for k, shock in shock_dict.items() if k in self.input_dict}}
+        shocked_input_dict = self.base_input_dict.copy()
+        for k, shock in shock_dict.items():
+            if k in shocked_input_dict:
+                shocked_input_dict[k] = self.base_input_dict[k] + h * shock
 
-        shocked_output_dict = self(shocked_input_dict)
+        shocked_output_dict = self.outputs.dict_from(make_tuple(self.f(**shocked_input_dict)))
 
         derivative_dict = {k: (shocked_output_dict[k] - self.output_dict[k])/h for k in self.output_dict}
 
@@ -126,13 +131,16 @@ class DifferentiableExtendedFunction(ExtendedFunction):
         if h is None:
             h = self.h
 
-        shocked_input_dict_up = {**self.input_dict,
-            **{k: self.input_dict[k] + h * shock for k, shock in shock_dict.items() if k in self.input_dict}}
-        shocked_input_dict_dn = {**self.input_dict,
-            **{k: self.input_dict[k] - h * shock for k, shock in shock_dict.items() if k in self.input_dict}}
+        shocked_input_dict_up = self.base_input_dict.copy()
+        shocked_input_dict_dn = self.base_input_dict.copy()
+        for k, shock in shock_dict.items():
+            if k in shocked_input_dict_up:
+                base_value = self.base_input_dict[k]
+                shocked_input_dict_up[k] = base_value + h * shock
+                shocked_input_dict_dn[k] = base_value - h * shock
 
-        shocked_output_dict_up = self(shocked_input_dict_up)
-        shocked_output_dict_dn = self(shocked_input_dict_dn)
+        shocked_output_dict_up = self.outputs.dict_from(make_tuple(self.f(**shocked_input_dict_up)))
+        shocked_output_dict_dn = self.outputs.dict_from(make_tuple(self.f(**shocked_input_dict_dn)))
 
         derivative_dict = {k: (shocked_output_dict_up[k] - shocked_output_dict_dn[k])/(2*h) for k in shocked_output_dict_dn}
 
@@ -268,4 +276,3 @@ class DifferentiableCombinedExtendedFunction(CombinedExtendedFunction, Different
             return {k: v for k, v in results.items() if k in outputs}
         else:
             return results
-

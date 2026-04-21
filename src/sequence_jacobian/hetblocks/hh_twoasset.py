@@ -1,5 +1,5 @@
 import numpy as np
-from numba import guvectorize
+from numba import guvectorize, njit
 
 from ..blocks.het_block import het
 from .. import interpolate
@@ -108,21 +108,117 @@ def hh(Va_p, Vb_p, a_grid, b_grid, z_grid, e_grid, k_grid, beta, eis, rb, ra, ch
 
 '''Supporting functions for HA block'''
 
+@njit(cache=True, fastmath=False)
+def _psi_loop(ap_flat, a_flat, ra, chi0, chi1, chi2):
+    n = ap_flat.shape[0]
+    Psi = np.empty(n)
+    Psi1 = np.empty(n)
+    Psi2 = np.empty(n)
+    ra1 = 1.0 + ra
+    chi_exp = chi2 - 1.0
+    chi1_over_chi2 = chi1 / chi2
+    for i in range(n):
+        a_wr = ra1 * a_flat[i]
+        dx = ap_flat[i] - a_wr
+        if dx >= 0.0:
+            adx = dx
+            sg = 1.0 if dx > 0.0 else 0.0
+        else:
+            adx = -dx
+            sg = -1.0
+        denom = a_wr + chi0
+        cf = (adx / denom) ** chi_exp
+        p = chi1_over_chi2 * adx * cf
+        p1 = chi1 * sg * cf
+        p2 = -ra1 * (p1 + chi_exp * p / denom)
+        Psi[i] = p
+        Psi1[i] = p1
+        Psi2[i] = p2
+    return Psi, Psi1, Psi2
+
+
+@njit(cache=True, fastmath=False)
+def _psi_loop_last_dim(ap, a_last, ra, chi0, chi1, chi2):
+    """Specialized path: ap has shape (..., N), a_last has shape (N,)"""
+    ap_flat = ap.reshape(-1, a_last.shape[0])
+    outer, n = ap_flat.shape
+    Psi = np.empty_like(ap_flat)
+    Psi1 = np.empty_like(ap_flat)
+    Psi2 = np.empty_like(ap_flat)
+    ra1 = 1.0 + ra
+    chi_exp = chi2 - 1.0
+    chi1_over_chi2 = chi1 / chi2
+    for j in range(n):
+        a_wr = ra1 * a_last[j]
+        denom = a_wr + chi0
+        for k in range(outer):
+            dx = ap_flat[k, j] - a_wr
+            if dx >= 0.0:
+                adx = dx
+                sg = 1.0 if dx > 0.0 else 0.0
+            else:
+                adx = -dx
+                sg = -1.0
+            cf = (adx / denom) ** chi_exp
+            p = chi1_over_chi2 * adx * cf
+            p1 = chi1 * sg * cf
+            Psi[k, j] = p
+            Psi1[k, j] = p1
+            Psi2[k, j] = -ra1 * (p1 + chi_exp * p / denom)
+    return Psi, Psi1, Psi2
+
+
+@njit(cache=True, fastmath=False)
+def _psi_loop_outer(ap_col, a_row, ra, chi0, chi1, chi2):
+    """Specialized path: ap_col has shape (N, 1), a_row has shape (1, M)"""
+    n = ap_col.shape[0]
+    m = a_row.shape[1]
+    Psi = np.empty((n, m))
+    Psi1 = np.empty((n, m))
+    Psi2 = np.empty((n, m))
+    ra1 = 1.0 + ra
+    chi_exp = chi2 - 1.0
+    chi1_over_chi2 = chi1 / chi2
+    for j in range(m):
+        a_wr = ra1 * a_row[0, j]
+        denom = a_wr + chi0
+        for i in range(n):
+            dx = ap_col[i, 0] - a_wr
+            if dx >= 0.0:
+                adx = dx
+                sg = 1.0 if dx > 0.0 else 0.0
+            else:
+                adx = -dx
+                sg = -1.0
+            cf = (adx / denom) ** chi_exp
+            p = chi1_over_chi2 * adx * cf
+            p1 = chi1 * sg * cf
+            Psi[i, j] = p
+            Psi1[i, j] = p1
+            Psi2[i, j] = -ra1 * (p1 + chi_exp * p / denom)
+    return Psi, Psi1, Psi2
+
+
 def get_Psi_and_deriv(ap, a, ra, chi0, chi1, chi2):
     """Adjustment cost Psi(ap, a) and its derivatives with respect to
     first argument (ap) and second argument (a)"""
-    a_with_return = (1 + ra) * a
-    a_change = ap - a_with_return
-    abs_a_change = np.abs(a_change)
-    sign_change = np.sign(a_change)
-
-    adj_denominator = a_with_return + chi0
-    core_factor = (abs_a_change / adj_denominator) ** (chi2 - 1)
-
-    Psi = chi1 / chi2 * abs_a_change * core_factor
-    Psi1 = chi1 * sign_change * core_factor
-    Psi2 = -(1 + ra) * (Psi1 + (chi2 - 1) * Psi / adj_denominator)
-    return Psi, Psi1, Psi2
+    # Fast path 1: a is 1D with length == ap.shape[-1]
+    if a.ndim == 1 and ap.ndim >= 1 and ap.shape[-1] == a.shape[0]:
+        shape = ap.shape
+        ap_c = np.ascontiguousarray(ap)
+        Psi, Psi1, Psi2 = _psi_loop_last_dim(ap_c, a, ra, chi0, chi1, chi2)
+        return Psi.reshape(shape), Psi1.reshape(shape), Psi2.reshape(shape)
+    # Fast path 2: a_grid[:, None], a_grid[None, :] pattern -> outer product
+    if (ap.ndim == 2 and a.ndim == 2 and ap.shape[1] == 1 and a.shape[0] == 1):
+        return _psi_loop_outer(np.ascontiguousarray(ap), np.ascontiguousarray(a),
+                               ra, chi0, chi1, chi2)
+    # General fallback
+    ap_b, a_b = np.broadcast_arrays(ap, a)
+    shape = ap_b.shape
+    ap_flat = np.ascontiguousarray(ap_b).reshape(-1)
+    a_flat = np.ascontiguousarray(a_b).reshape(-1)
+    Psi, Psi1, Psi2 = _psi_loop(ap_flat, a_flat, ra, chi0, chi1, chi2)
+    return Psi.reshape(shape), Psi1.reshape(shape), Psi2.reshape(shape)
 
 
 def matrix_times_first_dim(A, X):

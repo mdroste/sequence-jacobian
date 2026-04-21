@@ -250,23 +250,38 @@ class HetBlock(Block):
         exog = self.make_exog_law_of_motion(backdict)
         exog_path = []
 
+        # Precompute which hetinput sub-functions are reachable from any time-varying
+        # input. Hetinputs whose inputs are all time-invariant produce the same output
+        # every period, which is already present in `backdict` from the steady state
+        # (HetBlock internals include hetinput outputs), so we can skip them per-t.
+        if self.hetinputs is not None:
+            dyn_input_keys = OrderedSet([k for k in inputs if k in self.hetinputs.inputs])
+            if len(dyn_input_keys) > 0:
+                dyn_hetinput_funcs = self.hetinputs.filter(
+                    list(self.hetinputs.functions.values()), dyn_input_keys)
+            else:
+                dyn_hetinput_funcs = []
+        else:
+            dyn_hetinput_funcs = []
+
         for t in reversed(range(T)):
             for k in self.backward:
                 backdict[k + '_p'] = exog.expectation(backdict[k])
                 del backdict[k]
 
             backdict.update({k: ss[k] + v[t, ...] for k, v in inputs.items()})
-            self.update_with_hetinputs(backdict)
+            for f in dyn_hetinput_funcs:
+                backdict.update(f(backdict))
             backdict.update(self.backward_fun(backdict))
             self.update_with_hetoutputs(backdict)
- 
+
             for k in individual_paths:
                 individual_paths[k][t, ...] = backdict[k]
 
             exog = self.make_exog_law_of_motion(backdict)
 
             exog_path.append(exog)
-        
+
         return individual_paths, exog_path[::-1]
 
     def forward_nonlinear(self, ss, individual_paths, exog_path, monotonic):

@@ -86,9 +86,14 @@ class SolvedBlock(Block, Parent):
         inner_Js = self.block.partial_jacobians(ss, (OrderedSet(self.unknowns) | inputs), 
                                                 (OrderedSet(self.targets) | outputs - self.unknowns.keys()), T, Js, options)
 
-        # with these inner Js, also compute H_U and factorize
-        H_U = self.block.jacobian(ss, OrderedSet(self.unknowns), OrderedSet(self.targets), T, inner_Js, options)
-        H_U_factored = FactoredJacobianDict(H_U, T)
+        # Reuse an existing factorization when callers already computed it during an
+        # earlier partial_jacobians pass on the same solved block.
+        if self.name in Js and isinstance(Js[self.name], FactoredJacobianDict):
+            H_U_factored = Js[self.name]
+        else:
+            # with these inner Js, also compute H_U and factorize
+            H_U = self.block.jacobian(ss, OrderedSet(self.unknowns), OrderedSet(self.targets), T, inner_Js, options)
+            H_U_factored = FactoredJacobianDict(H_U, T)
 
         return {**inner_Js, self.name: H_U_factored}
 

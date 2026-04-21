@@ -39,7 +39,9 @@ class ResultDict:
     def __matmul__(self, x):
         # remap keys in toplevel
         if isinstance(x, Bijection):
-            new = copy.deepcopy(self)
+            # shallow copy is sufficient: we only rebind toplevel keys; internals
+            # and the array values inside are shared and not mutated by callers
+            new = self.copy()
             new.toplevel = x @ self.toplevel
             return new
         else:
